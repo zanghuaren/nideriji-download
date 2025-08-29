@@ -6,9 +6,11 @@ from Crypto.Cipher import AES
 import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
+import subprocess
+import sys
 
-EMAIL = "填写你的账号"
-PASSWORD = "填写你的密码"
+EMAIL = "请输入账号"
+PASSWORD = "请输入密码"
 ORDER_OLD_TO_NEW = True
 MAX_WORKERS = 5
 
@@ -64,7 +66,6 @@ def get_diaries_overview(token, partner=False):
                             'readmark_ts': '0', 'images_ts': '0'})
     r.raise_for_status()
     data = r.json()
-    # print(data)
 
     if partner:
         diaries = data.get('diaries_paired', [])
@@ -113,7 +114,8 @@ def save_diary(diary):
     """保存 Markdown 日记"""
     diary_date = datetime.datetime.strptime(
         diary['createddate'], "%Y-%m-%d").date()
-    folder_name = f"{diary_date.year}-{diary_date.month:02d}"
+    folder_name = os.path.join(
+        "markdown", f"{diary_date.year}-{diary_date.month:02d}")
     os.makedirs(folder_name, exist_ok=True)
     filename = os.path.join(folder_name, f"{diary_date}.md")
     with open(filename, 'w', encoding='utf-8') as f:
@@ -125,14 +127,15 @@ def save_diary(diary):
 
 def download_all_images(image_ids, user_id, headers):
     """下载所有图片"""
-    os.makedirs("Pictures", exist_ok=True)
+    pictures_dir = os.path.join("markdown", "Pictures")
+    os.makedirs(pictures_dir, exist_ok=True)
     print(f"[INFO] 开始下载 {len(image_ids)} 张图片")
     for image_id in tqdm(image_ids, desc="下载图片", unit="img"):
         url = f"https://f.nideriji.cn/api/image/{user_id}/{image_id}/"
         try:
             r = requests.get(url, headers=headers, timeout=15)
             r.raise_for_status()
-            with open(os.path.join("Pictures", f"{image_id}.jpg"), 'wb') as f:
+            with open(os.path.join(pictures_dir, f"{image_id}.jpg"), 'wb') as f:
                 f.write(r.content)
         except Exception as e:
             print(f"[WARN] 下载图片 {image_id} 失败: {e}")
@@ -145,7 +148,8 @@ def replace_images_in_markdown(diaries):
     for d in diaries:
         diary_date = datetime.datetime.strptime(
             d['createddate'], "%Y-%m-%d").date()
-        folder_name = f"{diary_date.year}-{diary_date.month:02d}"
+        folder_name = os.path.join(
+            "markdown", f"{diary_date.year}-{diary_date.month:02d}")
         md_files.append(os.path.join(folder_name, f"{diary_date}.md"))
     for md_file in tqdm(md_files, desc="替换图片路径", unit="篇"):
         with open(md_file, 'r', encoding='utf-8') as f:
@@ -154,6 +158,33 @@ def replace_images_in_markdown(diaries):
             r'\[图(\d+)\]', lambda m: f"![img](../Pictures/{m.group(1)}.jpg)", content)
         with open(md_file, 'w', encoding='utf-8') as f:
             f.write(content)
+
+
+def run_trans_script():
+    """运行 trans.py 脚本生成HTML"""
+    print("[INFO] 开始生成HTML文件...")
+    try:
+        # 检查 trans.py 是否存在
+        if not os.path.exists("trans.py"):
+            print("[ERROR] trans.py 文件不存在")
+            return False
+
+        # 运行 trans.py
+        result = subprocess.run(
+            [sys.executable, "trans.py"], capture_output=True, text=True)
+
+        if result.returncode == 0:
+            print("[INFO] HTML文件生成成功！")
+            print(result.stdout)
+            return True
+        else:
+            print("[ERROR] HTML文件生成失败")
+            print(result.stderr)
+            return False
+
+    except Exception as e:
+        print(f"[ERROR] 运行 trans.py 时出错: {e}")
+        return False
 
 
 if __name__ == "__main__":
@@ -201,3 +232,14 @@ if __name__ == "__main__":
     replace_images_in_markdown(full_diaries)
 
     print("[INFO] 日记及图片按月份导出完成！")
+
+    # 询问是否生成HTML
+    generate_html_choice = input("是否生成HTML文件？(y/n): ").lower()
+    if generate_html_choice == 'y':
+        success = run_trans_script()
+        if success:
+            print("[INFO] 所有操作完成！HTML文件已生成在 html/output/ 目录")
+        else:
+            print("[WARNING] HTML生成失败，但Markdown文件已保存")
+    else:
+        print("[INFO] 跳过HTML生成")

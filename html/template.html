@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>你的日记</title>
+<meta name="color-scheme" content="light dark">
+<style>
+:root {
+  --bg: #f7f7fb; --paper: #ffffff; --ink: #141414; --muted: #6b7280;
+  --primary: #3b82f6; --radius: 16px; --shadow: 0 10px 25px rgba(17, 24, 39, 0.08);
+  --maxw: 860px; --code-bg: #0b1020; --code-ink: #d6e1ff;
+  --background-image: url('background.png');
+}
+[data-theme="dark"] {
+  --bg: #0b0e14; --paper: #0f131b; --ink: #e5e7eb; --muted: #9aa3b2;
+  --background-image: none;
+}
+
+html, body { height: 100%; }
+body {
+  margin: 0; padding: 32px 16px 120px;
+  min-height: 100vh;
+  background-attachment: fixed;
+  background-image: var(--background-image);
+  background-size: cover;
+  background-position: center;
+  background-color: var(--bg);
+  color: var(--ink);
+  font: 16px/1.65 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+.wrap { max-width: var(--maxw); margin: 0 auto; position: relative; }
+
+.topbar { display:flex; align-items:center; justify-content:space-between; gap: 12px; margin-bottom: 28px; flex-wrap: wrap; }
+.brand { display:flex; align-items:center; gap:8px; font-weight: 700; font-size: 18px; opacity:.9; }
+.brand img { height: 24px; width: 24px; object-fit: contain; }
+.actions { display:flex; gap: 8px; align-items:center; flex-wrap: wrap; }
+.btn {
+  appearance: none; border: 1px solid rgba(0,0,0,.08);
+  background: var(--paper); color: var(--ink);
+  padding: 8px 14px; border-radius: 12px; cursor: pointer;
+  box-shadow: var(--shadow); transition: transform .06s ease, box-shadow .2s ease, opacity .2s ease;
+  display:flex; align-items:center; justify-content:center; gap:4px;
+}
+.btn:hover { transform: translateY(-1px); box-shadow: 0 12px 28px rgba(17,24,39,.12); }
+.btn.primary { background: var(--primary); color: #fff; border-color: transparent; }
+
+#searchInput {
+  padding: 8px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(0,0,0,.08);
+  outline: none;
+  width: 220px;
+  transition: box-shadow .2s ease;
+  background: var(--paper);
+  color: var(--ink);
+}
+#searchInput:focus { box-shadow: 0 0 0 2px rgba(59,130,246,.3); border-color: var(--primary); }
+
+.timeline { position: relative; margin-left: 40px; }
+.timeline::before {
+  content: ''; position: absolute; top:0; bottom:0; left:15px;
+  width: 4px; background: var(--primary); border-radius: 2px;
+}
+.diary { position: relative; margin-left: 40px; background: linear-gradient(180deg, rgba(255,255,255,.8), rgba(255,255,255,.9)), var(--paper);
+  border-radius: var(--radius); box-shadow: var(--shadow); padding: 28px; margin: 18px 0 28px;
+  border:1px solid rgba(0,0,0,.06); cursor: default; transition: transform .08s ease; }
+.diary:hover { transform: translateY(-2px); }
+[data-theme="dark"] .diary { background: linear-gradient(180deg, rgba(15,19,27,.85), rgba(15,19,27,.92)), var(--paper); border-color: rgba(255,255,255,.06); }
+
+.diary::before {
+  content: ''; position: absolute; left: -25px; top: 28px; width: 10px; height: 10px;
+  background: var(--primary); border-radius: 50%;
+}
+
+.meta { display:flex; flex-wrap: wrap; align-items: baseline; gap: 10px 16px; color: var(--muted); font-size: 14px; }
+.date { font-weight: 700; color: var(--ink); font-size: 18px; }
+.weekday { padding: 2px 8px; border-radius: 999px; border:1px solid rgba(0,0,0,.08); }
+
+.title { margin: 14px 0 10px; font-size: 24px; line-height: 1.35; letter-spacing:.2px; }
+.content { margin-top: 8px; }
+.content p { margin: 10px 0 14px; }
+.content img { max-width: 100%; height: auto; border-radius: 12px; display:block; margin: 12px auto; box-shadow: 0 8px 24px rgba(0,0,0,.14); }
+mark { background-color: yellow; }
+
+.footer { text-align:center; color: var(--muted); margin-top: 40px; font-size: 14px; }
+.to-top { position: fixed; right: 18px; bottom: 18px; z-index: 10; }
+
+@media print {
+  body { background: #fff; padding: 0; }
+  .topbar, .to-top { display: none; }
+  .diary { box-shadow: none; border: none; page-break-inside: avoid; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <div class="brand">
+      <img src="./logo.png" alt="logo" />
+      你的日记
+    </div>
+    <div class="actions">
+      <button class="btn" id="toggle-theme" title="切换主题">切换主题</button>
+      <input type="text" id="searchInput" placeholder="输入关键字或日期...">
+      <button class="btn primary" id="searchBtn" title="搜索">搜索</button>
+    </div>
+  </div>
+
+  <div class="timeline">
+    {{CONTENT_HTML}}
+  </div>
+
+  <footer class="footer">你的名字是？</footer>
+</div>
+
+<button class="btn to-top" onclick="window.scrollTo({top:0, behavior:'smooth'})">↑ 返回顶部</button>
+
+<script>
+const key = 'diary-theme';
+const toggleBtn = document.getElementById('toggle-theme');
+
+const apply = (mode) => {
+  if(mode === 'light' || mode === 'dark'){
+    document.documentElement.setAttribute('data-theme', mode);
+    localStorage.setItem(key, mode);
+  } else {
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.setAttribute('data-theme', prefersDark ? 'dark' : 'light');
+    localStorage.setItem(key,'auto');
+  }
+};
+toggleBtn?.addEventListener('click', ()=>{
+  const current = localStorage.getItem(key) || 'auto';
+  let next;
+  if(current === 'dark') next='light';
+  else next='dark';
+  apply(next);
+});
+apply(localStorage.getItem(key)||'auto');
+
+const searchInput = document.getElementById("searchInput");
+const searchBtn = document.getElementById("searchBtn");
+const diaries = document.querySelectorAll(".diary");
+
+function escapeRegExp(string){return string.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');}
+
+diaries.forEach(d=>{
+  d.dataset.fullContent = d.querySelector(".content").innerHTML;
+  d.dataset.date = d.querySelector(".date").textContent.replace(/-/g,"");
+  d.dataset.expanded = "true";
+});
+
+function searchDiaries(){
+  const keyword = searchInput.value.trim();
+  diaries.forEach(d=>{
+    const contentElem = d.querySelector(".content");
+    const fullContent = d.dataset.fullContent;
+    const diaryDate = d.dataset.date;
+    let show = false;
+    if(/^\d{8}$/.test(keyword)) show = diaryDate===keyword;
+    else if(/^\d{4}-\d{2}-\d{2}$/.test(keyword)) show = diaryDate===keyword.replace(/-/g,"");
+    else if(keyword) show = fullContent.includes(keyword);
+    else show = true;
+
+    if(show){
+      d.style.display="block";
+      if(keyword && !/^\d{8}$|^\d{4}-\d{2}-\d{2}$/.test(keyword)){
+        d.dataset.expanded="false";
+        const regex = new RegExp(`(.{0,50})(${escapeRegExp(keyword)})(.{0,50})`,"gi");
+        const match = fullContent.replace(/\n/g," ").match(regex);
+        if(match){
+          const snippet = match.map(s=>s.replace(new RegExp(escapeRegExp(keyword),"gi"),`<mark>${keyword}</mark>`)).join(" ... ");
+          contentElem.innerHTML=snippet;
+        }
+      } else {
+        contentElem.innerHTML=fullContent;
+        d.dataset.expanded="true";
+      }
+    } else d.style.display="none";
+  });
+}
+
+searchBtn.addEventListener("click",searchDiaries);
+searchInput.addEventListener("keydown",(e)=>{if(e.key==="Enter") searchDiaries();});
+
+diaries.forEach(d=>{
+  d.addEventListener("click",()=>{
+    const contentElem=d.querySelector(".content");
+    if(d.dataset.expanded==="false"){
+      contentElem.innerHTML=d.dataset.fullContent;
+      d.dataset.expanded="true";
+    }
+  });
+});
+</script>
+</body>
+</html>
