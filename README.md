@@ -5,6 +5,10 @@
 
 
 ---
+# 主要功能
+导出**你的日记APP**自己及匹配搭档的日记为markdown和html。
+
+
 # 预览
 <img width="808" height="613" alt="Snipaste_2025-08-29_20-55-02" src="https://github.com/user-attachments/assets/7e69a890-25b1-4f47-93d3-77cd4cf28052" />
 
@@ -14,8 +18,7 @@
 - 2025年10月：一些小的优化，优化了不同用户的工作目录。
 
 
-# 主要功能
-导出**你的日记APP**自己及匹配搭档的日记为markdown格式。
+
 
 # 使用说明
 ```
