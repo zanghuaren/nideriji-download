@@ -4,23 +4,38 @@ import os
 import glob
 import re
 import shutil
+import sys
 
-TEMPLATE_FILE = os.path.join("html", "template.html")
+# 接受 base_folder 参数
+if len(sys.argv) > 1:
+    base_folder = sys.argv[1]
+else:
+    base_folder = "myself"
+
+REVERSE_ORDER = True
+# True表示按时间倒序排序
+
+TEMPLATE_FILE = os.path.join(base_folder, "html", "template.html")
+if not os.path.exists(TEMPLATE_FILE):
+    raise FileNotFoundError(f"{TEMPLATE_FILE} 不存在！")
 with open(TEMPLATE_FILE, "r", encoding="utf-8") as f:
     TEMPLATE = f.read()
 
 WEEKDAY_MAP = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
-input_folder = "markdown"
-output_dir = os.path.join("html", "output")
-output_file = os.path.join(output_dir, "diaries.html")
+input_folder = os.path.join(base_folder, "markdown")
+output_dir = os.path.join(base_folder, "html", "output")
 pictures_folder = os.path.join(output_dir, "Pictures")
-
 os.makedirs(pictures_folder, exist_ok=True)
 
 diaries_html = []
 
-for filepath in sorted(glob.glob(os.path.join(input_folder, "**/*.md"), recursive=True)):
+filepaths = sorted(glob.glob(os.path.join(
+    input_folder, "**/*.md"), recursive=True))
+if REVERSE_ORDER:
+    filepaths = list(reversed(filepaths))
+
+for filepath in filepaths:
     filename = os.path.basename(filepath)
     name, _ = os.path.splitext(filename)
 
@@ -60,20 +75,14 @@ for filepath in sorted(glob.glob(os.path.join(input_folder, "**/*.md"), recursiv
     diaries_html.append(article)
 
 os.makedirs(output_dir, exist_ok=True)
-with open(output_file, "w", encoding="utf-8") as f:
-    content_html = "\n".join(diaries_html)
-    f.write(TEMPLATE.replace("{{CONTENT_HTML}}", content_html))
+with open(os.path.join(output_dir, "diaries.html"), "w", encoding="utf-8") as f:
+    f.write(TEMPLATE.replace("{{CONTENT_HTML}}", "\n".join(diaries_html)))
 
-logo_src = os.path.join("html", "logo.png")
-logo_dst = os.path.join(output_dir, "logo.png")
-if os.path.exists(logo_src):
-    shutil.copy2(logo_src, logo_dst)
+# 拷贝 logo 和背景
+for fname in ["logo.png", "background.png"]:
+    src = os.path.join(base_folder, "html", fname)
+    dst = os.path.join(output_dir, fname)
+    if os.path.exists(src):
+        shutil.copy2(src, dst)
 
-background_src = os.path.join("html", "background.png")
-background_dst = os.path.join(output_dir, "background.png")
-if os.path.exists(background_src):
-    shutil.copy2(background_src, background_dst)
-else:
-    print(f"[WARNING] 背景图片 {background_src} 不存在")
-
-print(f"[INFO] 已生成 {output_file}")
+print(f"[INFO] 已生成 {os.path.join(output_dir, 'diaries.html')}")

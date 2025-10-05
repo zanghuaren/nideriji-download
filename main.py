@@ -8,15 +8,20 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 import subprocess
 import sys
+import shutil
 
-EMAIL = "请输入账号"
-PASSWORD = "请输入密码"
+EMAIL = ""
+PASSWORD = ""
 ORDER_OLD_TO_NEW = True
 MAX_WORKERS = 5
 
+# ========== 设置 ==========
+# True 表示只有选择默认日期范围时才会下载图片
+DOWNLOAD_IMAGES_ONLY_DEFAULT = True
+# =========================
+
 
 def login(email, password):
-    """登录并获取 token"""
     url = "https://nideriji.cn/api/login/"
     headers = {'User-Agent': 'OhApp/3.6.12 Platform/Android'}
     data = {'email': email, 'password': password}
@@ -30,14 +35,12 @@ def login(email, password):
 
 
 def clean_unicode(text):
-    """清理高代理 Unicode"""
     for prefix in ["\\ud83c", "\\ud83d", "\\ud83e"]:
         text = text.replace(prefix, "")
     return text
 
 
 def decrypt_privacy(content, user_id):
-    """解密隐私日记块"""
     def decrypt_block(match):
         cipher_text = match.group(1)
         key = str(user_id).encode('utf-8')
@@ -57,7 +60,6 @@ def decrypt_privacy(content, user_id):
 
 
 def get_diaries_overview(token, partner=False):
-    """获取日记列表及图片 ID"""
     headers = {'auth': f'token {token}',
                'User-Agent': 'OhApp/3.6.12 Platform/Android'}
     r = requests.post("https://nideriji.cn/api/v2/sync/",
@@ -85,7 +87,6 @@ def get_diaries_overview(token, partner=False):
 
 
 def get_diary_full(token, user_id, diary_id):
-    """获取完整日记内容"""
     headers = {'auth': f'token {token}',
                'User-Agent': 'OhApp/3.6.12 Platform/Android'}
     r = requests.post(f"https://nideriji.cn/api/diary/all_by_ids/{user_id}/",
@@ -102,7 +103,6 @@ def get_diary_full(token, user_id, diary_id):
 
 
 def filter_diaries_by_date(diaries, start_date, end_date):
-    """按日期筛选日记"""
     filtered = [d for d in diaries if start_date <= datetime.datetime.strptime(
         d['createddate'], "%Y-%m-%d").date() <= end_date]
     filtered.sort(key=lambda x: x['createddate'], reverse=not ORDER_OLD_TO_NEW)
@@ -110,12 +110,11 @@ def filter_diaries_by_date(diaries, start_date, end_date):
     return filtered
 
 
-def save_diary(diary):
-    """保存 Markdown 日记"""
+def save_diary(diary, markdown_folder):
     diary_date = datetime.datetime.strptime(
         diary['createddate'], "%Y-%m-%d").date()
     folder_name = os.path.join(
-        "markdown", f"{diary_date.year}-{diary_date.month:02d}")
+        markdown_folder, f"{diary_date.year}-{diary_date.month:02d}")
     os.makedirs(folder_name, exist_ok=True)
     filename = os.path.join(folder_name, f"{diary_date}.md")
     with open(filename, 'w', encoding='utf-8') as f:
@@ -125,54 +124,41 @@ def save_diary(diary):
         f.write(diary.get('content', ''))
 
 
-def download_all_images(image_ids, user_id, headers):
-    """下载所有图片"""
-    pictures_dir = os.path.join("markdown", "Pictures")
-    os.makedirs(pictures_dir, exist_ok=True)
+def download_all_images(image_ids, user_id, headers, pictures_folder):
+    os.makedirs(pictures_folder, exist_ok=True)
     print(f"[INFO] 开始下载 {len(image_ids)} 张图片")
     for image_id in tqdm(image_ids, desc="下载图片", unit="img"):
         url = f"https://f.nideriji.cn/api/image/{user_id}/{image_id}/"
         try:
             r = requests.get(url, headers=headers, timeout=15)
             r.raise_for_status()
-            with open(os.path.join(pictures_dir, f"{image_id}.jpg"), 'wb') as f:
+            with open(os.path.join(pictures_folder, f"{image_id}.jpg"), 'wb') as f:
                 f.write(r.content)
         except Exception as e:
             print(f"[WARN] 下载图片 {image_id} 失败: {e}")
 
 
-def replace_images_in_markdown(diaries):
-    """替换 Markdown 中图片路径"""
-    print("[INFO] 替换 Markdown 中图片路径...")
+def replace_images_in_markdown(diaries, markdown_folder, pictures_folder):
     md_files = []
     for d in diaries:
         diary_date = datetime.datetime.strptime(
             d['createddate'], "%Y-%m-%d").date()
         folder_name = os.path.join(
-            "markdown", f"{diary_date.year}-{diary_date.month:02d}")
+            markdown_folder, f"{diary_date.year}-{diary_date.month:02d}")
         md_files.append(os.path.join(folder_name, f"{diary_date}.md"))
     for md_file in tqdm(md_files, desc="替换图片路径", unit="篇"):
         with open(md_file, 'r', encoding='utf-8') as f:
             content = f.read()
         content = re.sub(
-            r'\[图(\d+)\]', lambda m: f"![img](../Pictures/{m.group(1)}.jpg)", content)
+            r'\[图(\d+)\]', lambda m: f"![img]({os.path.join(pictures_folder, f'{m.group(1)}.jpg')})", content)
         with open(md_file, 'w', encoding='utf-8') as f:
             f.write(content)
 
 
-def run_trans_script():
-    """运行 trans.py 脚本生成HTML"""
-    print("[INFO] 开始生成HTML文件...")
+def run_trans_script(base_folder):
     try:
-        # 检查 trans.py 是否存在
-        if not os.path.exists("trans.py"):
-            print("[ERROR] trans.py 文件不存在")
-            return False
-
-        # 运行 trans.py
-        result = subprocess.run(
-            [sys.executable, "trans.py"], capture_output=True, text=True)
-
+        result = subprocess.run([sys.executable, "trans.py", base_folder],
+                                capture_output=True, text=True)
         if result.returncode == 0:
             print("[INFO] HTML文件生成成功！")
             print(result.stdout)
@@ -181,7 +167,6 @@ def run_trans_script():
             print("[ERROR] HTML文件生成失败")
             print(result.stderr)
             return False
-
     except Exception as e:
         print(f"[ERROR] 运行 trans.py 时出错: {e}")
         return False
@@ -192,9 +177,25 @@ if __name__ == "__main__":
     password = input(f"请输入密码: ") or PASSWORD
     token = login(email, password)
 
-    # 新增选择：自己日记或搭档日记
     choice = input("输入1保存自己的日记，输入2保存搭档的日记：") or "1"
     partner = choice == "2"
+
+    # ---------------- 用户基准目录 ----------------
+    base_folder = "partner" if partner else "myself"
+    markdown_folder = os.path.join(base_folder, "markdown")
+    html_folder = os.path.join(base_folder, "html")
+    pictures_folder = os.path.join(html_folder, "output", "Pictures")
+    os.makedirs(markdown_folder, exist_ok=True)
+    os.makedirs(html_folder, exist_ok=True)
+    os.makedirs(os.path.join(html_folder, "output"), exist_ok=True)
+
+    # ---------------- 拷贝模板、logo、背景 ----------------
+    src_html_dir = "html"  # 原始模板存放位置
+    for fname in ["template.html", "logo.png", "background.png"]:
+        src = os.path.join(src_html_dir, fname)
+        dst = os.path.join(html_folder, fname)
+        if os.path.exists(src):
+            shutil.copy2(src, dst)
 
     diaries_overview, user_id, all_image_ids = get_diaries_overview(
         token, partner)
@@ -225,20 +226,27 @@ if __name__ == "__main__":
         for future in tqdm(as_completed(futures), total=len(futures), desc="下载日记", unit="篇"):
             diary = future.result()
             if diary:
-                save_diary(diary)
+                save_diary(diary, markdown_folder)
                 full_diaries.append(diary)
 
-    download_all_images(all_image_ids, user_id, headers)
-    replace_images_in_markdown(full_diaries)
+    used_default_range = (
+        start_year == first_date and start_month == 1 and
+        end_year == now.year and end_month == now.month
+    )
 
-    print("[INFO] 日记及图片按月份导出完成！")
+    if not DOWNLOAD_IMAGES_ONLY_DEFAULT or used_default_range:
+        download_all_images(all_image_ids, user_id, headers, pictures_folder)
+        replace_images_in_markdown(full_diaries, markdown_folder, "./Pictures")
+    else:
+        print("[INFO] 非默认日期范围，跳过下载图片步骤")
 
-    # 询问是否生成HTML
+    print("[INFO] 日记导出完成！")
+
     generate_html_choice = input("是否生成HTML文件？(y/n): ").lower()
     if generate_html_choice == 'y':
-        success = run_trans_script()
+        success = run_trans_script(base_folder)
         if success:
-            print("[INFO] 所有操作完成！HTML文件已生成在 html/output/ 目录")
+            print(f"[INFO] 所有操作完成！HTML文件已生成在 {html_folder}/output/ 目录")
         else:
             print("[WARNING] HTML生成失败，但Markdown文件已保存")
     else:
