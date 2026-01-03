@@ -26,6 +26,12 @@ pip install requests tqdm pycryptodome
 python3 main.py
 ```
 
+# 新增计划任务版本，方便把html保存为浏览器书签自动更新
+去掉了原脚本的终端交互，改为输出日志，如果存在大于三天未同步，则增量同步，否则只同步最近三天的脚本（考虑到当天同步时间后还可能修改最近的日记，所以这么做）。  
+使用方法：
+1. win + r 输入taskschd.msc，打开计划任务程序
+2. 新建任务，基本设置按照自己喜好来，注意在action选项中，Program/script要填C:\Windows\System32\wscript.exe，然后在下面的参数中再填vbs的路径（路径要带引号）。
+
 
 # 运行截图
 <img width="767" height="462" alt="Snipaste_2025-08-24_20-27-11" src="https://github.com/user-attachments/assets/bc7e4389-7f9d-41cf-b337-a5e71ee8dff8" />
