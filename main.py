@@ -516,7 +516,7 @@ class DiaryDownloader:
 
     def generate_html(self, base_folder):
         """生成HTML文件"""
-        print("[INFO] 正在生成HTML文件...")
+        # print("[INFO] 正在生成HTML文件...")
 
         html_folder = os.path.join(base_folder, "html")
         if not os.path.exists(html_folder):
@@ -540,7 +540,7 @@ class DiaryDownloader:
                 # 检查输出目录
                 output_dir = os.path.join(base_folder, "html")
                 if os.path.exists(output_dir):
-                    print(f"[INFO] HTML文件位于: {output_dir}")
+                    # print(f"[INFO] HTML文件位于: {output_dir}")
                     # 列出生成的HTML文件
                     for file in os.listdir(output_dir):
                         if file.endswith('.html'):
@@ -669,7 +669,7 @@ def main():
     success = downloader.download_diaries(sync_data, partner)
 
     if success:
-        print("\n" + "=" * 60)
+        # print("\n" + "=" * 60)
         print("[INFO] 日记导出完成！")
 
         # 询问是否生成HTML
@@ -697,3 +697,4 @@ if __name__ == "__main__":
         print(f"\n\n[ERROR] 程序运行出错: {e}")
         import traceback
         traceback.print_exc()
+
