@@ -1,3 +1,4 @@
+import urllib3
 import requests
 import os
 import re
@@ -9,245 +10,690 @@ from tqdm import tqdm
 import subprocess
 import sys
 import shutil
+import json
+import time
+from typing import List, Dict, Set, Tuple
+from urllib.parse import urlparse
 
+# 配置
 EMAIL = ""
 PASSWORD = ""
 ORDER_OLD_TO_NEW = True
-MAX_WORKERS = 5
+MAX_WORKERS = 5  # 控制并发，减轻服务器压力
+REQUEST_TIMEOUT = 15
+REQUEST_INTERVAL = 0.1  # 请求间隔（秒）
 
-# ========== 设置 ==========
-# True 表示只有选择默认日期范围时才会下载图片
-DOWNLOAD_IMAGES_ONLY_DEFAULT = True
-# =========================
-
-
-def login(email, password):
-    url = "https://nideriji.cn/api/login/"
-    headers = {'User-Agent': 'OhApp/3.6.12 Platform/Android'}
-    data = {'email': email, 'password': password}
-    r = requests.post(url, headers=headers, data=data)
-    r.raise_for_status()
-    token = r.json().get('token')
-    if not token:
-        raise ValueError("登录失败，未获取到 token")
-    print("[INFO] 登录成功")
-    return token
+# 禁用系统代理以避免SSL问题
+urllib3.disable_warnings()
 
 
-def clean_unicode(text):
-    for prefix in ["\\ud83c", "\\ud83d", "\\ud83e"]:
-        text = text.replace(prefix, "")
-    return text
+class DiaryDownloader:
+    def __init__(self, email, password):
+        self.email = email
+        self.password = password
+        self.token = None
+        self.user_id = None
+        self.partner_user_id = None
+        self.session = requests.Session()
+        self.session.verify = False  # 禁用SSL验证（如果遇到证书问题）
+        self.session.trust_env = False  # 禁用系统代理
+        self.session.headers.update({
+            "User-Agent": "OhApp/3.6.12 Platform/Android"
+        })
 
+    def login(self):
+        """登录获取token"""
+        print("[INFO] 正在登录...")
+        url = "https://nideriji.cn/api/login/"
+        data = {
+            "email": self.email,
+            "password": self.password
+        }
 
-def decrypt_privacy(content, user_id):
-    def decrypt_block(match):
-        cipher_text = match.group(1)
-        key = str(user_id).encode('utf-8')
-        aes = AES.new(key.ljust(16, b'\0'), AES.MODE_ECB)
         try:
-            decrypted = aes.decrypt(bytes.fromhex(cipher_text))
-            return "[隐私区域开始]" + decrypted.decode('utf-8', errors='ignore') + "[隐私区域结束]"
-        except:
+            response = self.session.post(
+                url, data=data, timeout=REQUEST_TIMEOUT)
+            response.raise_for_status()
+            result = response.json()
+
+            if result.get("error") != 0:
+                raise ValueError(f"登录失败: {result}")
+
+            self.token = result.get("token")
+            self.user_id = result.get("userid")
+
+            if not self.token:
+                raise ValueError("登录失败，未获取到token")
+
+            # 更新session的认证头
+            self.session.headers.update({"auth": f"token {self.token}"})
+
+            print(f"[INFO] 登录成功，用户ID: {self.user_id}")
+            time.sleep(REQUEST_INTERVAL)
+            return True
+
+        except Exception as e:
+            print(f"[ERROR] 登录失败: {e}")
+            return False
+
+    def get_sync_data(self, partner=False):
+        """获取同步数据"""
+        print("[INFO] 正在获取日记列表...")
+        url = "https://nideriji.cn/api/v2/sync/"
+        data = {
+            "user_config_ts": "0",
+            "diaries_ts": "0",
+            "readmark_ts": "0",
+            "images_ts": "0"
+        }
+
+        try:
+            response = self.session.post(
+                url, data=data, timeout=REQUEST_TIMEOUT)
+            response.raise_for_status()
+            result = response.json()
+
+            if result.get("error") != 0:
+                print(f"[ERROR] 同步失败: {result}")
+                return None
+
+            if partner:
+                diaries = result.get("diaries_paired", [])
+                user_config = result.get("user_config", {}).get(
+                    "paired_user_config", {})
+                user_id = user_config.get("userid")
+                if not user_id:
+                    user_id = self.user_id  # 备用方案
+                print(f"[INFO] 获取到搭档 {len(diaries)} 篇日记")
+            else:
+                diaries = result.get("diaries", [])
+                user_config = result.get("user_config", {})
+                user_id = user_config.get("userid", self.user_id)
+                print(f"[INFO] 获取到 {len(diaries)} 篇日记")
+
+            # 按日期排序
+            diaries.sort(key=lambda x: x.get("createddate", ""), reverse=True)
+
+            time.sleep(REQUEST_INTERVAL)
+            return {
+                "diaries": diaries,
+                "user_id": user_id,
+                "user_config": user_config
+            }
+
+        except Exception as e:
+            print(f"[ERROR] 获取同步数据失败: {e}")
+            return None
+
+    def get_full_diary_content(self, diary_id, author_user_id):
+        """获取单篇完整日记内容"""
+        url = f"https://nideriji.cn/api/diary/all_by_ids/{author_user_id}/"
+        data = {"diary_ids": str(diary_id)}
+
+        try:
+            response = self.session.post(
+                url, data=data, timeout=REQUEST_TIMEOUT)
+            time.sleep(REQUEST_INTERVAL)
+            response.raise_for_status()
+            result = response.json()
+
+            if result.get("error") != 0 or not result.get("diaries"):
+                print(f"[WARN] 获取日记 {diary_id} 失败: {result}")
+                return None
+
+            diary = result["diaries"][0]
+
+            # 清理内容
+            content = diary.get("content", "")
+            if content:
+                # 解密隐私内容
+                content = self.decrypt_privacy(content, author_user_id)
+                # 提取图片ID
+                image_ids = self.extract_image_ids(content)
+            else:
+                image_ids = set()
+
+            return {
+                "id": diary.get("id"),
+                "user_id": diary.get("user"),
+                "createddate": diary.get("createddate"),
+                "title": diary.get("title", ""),
+                "content": content,
+                "weather": diary.get("weather", ""),
+                "mood": diary.get("mood", ""),
+                "space": diary.get("space", ""),
+                "createdtime": diary.get("createdtime"),
+                "image_ids": image_ids
+            }
+
+        except Exception as e:
+            print(f"[ERROR] 获取日记 {diary_id} 详情失败: {e}")
+            return None
+
+    def decrypt_privacy(self, content, user_id):
+        """解密隐私内容"""
+        if not content or not user_id:
+            return content
+
+        try:
+            # 查找隐私区域
+            pattern = r'\[以下是隐私区域密文，请不要做任何编辑，否则可能导致解密失败\](.*?)\[以上是隐私日记，请不要编辑密文\]'
+            matches = re.findall(pattern, content, re.DOTALL)
+
+            if not matches:
+                return content
+
+            for cipher_text in matches:
+                cipher_text = cipher_text.strip()
+                if not cipher_text:
+                    continue
+
+                # 准备密钥
+                key_str = str(user_id)
+                key = key_str.encode('utf-8')
+
+                # 填充到16字节
+                if len(key) < 16:
+                    key = key + b'\0' * (16 - len(key))
+                elif len(key) > 16:
+                    key = key[:16]
+
+                # 创建AES解密器
+                cipher = AES.new(key, AES.MODE_ECB)
+
+                try:
+                    # 尝试base64解码
+                    cipher_bytes = base64.b64decode(cipher_text)
+                except:
+                    try:
+                        # 尝试hex解码
+                        cipher_bytes = bytes.fromhex(cipher_text)
+                    except:
+                        print(f"[WARN] 无法解码密文: {cipher_text[:50]}...")
+                        continue
+
+                # 解密
+                decrypted = cipher.decrypt(cipher_bytes)
+
+                # 移除PKCS7填充（如果存在）
+                try:
+                    padding_len = decrypted[-1]
+                    if padding_len <= 16:
+                        decrypted = decrypted[:-padding_len]
+                except:
+                    pass
+
+                # 解码为字符串
+                try:
+                    decrypted_text = decrypted.decode(
+                        'utf-8', errors='ignore').strip()
+                except:
+                    decrypted_text = "[隐私内容解密失败]"
+
+                # 替换原文中的密文
+                content = content.replace(
+                    f"[以下是隐私区域密文，请不要做任何编辑，否则可能导致解密失败]{cipher_text}[以上是隐私日记，请不要编辑密文]",
+                    f"[隐私内容开始]\n{decrypted_text}\n[隐私内容结束]"
+                )
+
+            return content
+
+        except Exception as e:
+            print(f"[WARN] 解密失败: {e}")
+            return content
+
+    def extract_image_ids(self, content):
+        """从内容中提取图片ID"""
+        if not content:
+            return set()
+
+        pattern = r'\[图(\d+)\]'
+        matches = re.findall(pattern, content)
+
+        # 转换为整数集合
+        image_ids = set()
+        for match in matches:
             try:
-                decrypted = aes.decrypt(base64.b64decode(cipher_text))
-                return "[隐私区域开始]" + decrypted.decode('utf-8', errors='ignore') + "[隐私区域结束]"
+                image_ids.add(int(match))
             except:
-                return match.group(0)
-    pattern = re.compile(
-        r"\[以下是隐私区域密文，请不要做任何编辑，否则可能导致解密失败\]([\s\S]+?)\[以上是隐私日记，请不要编辑密文\]")
-    return pattern.sub(decrypt_block, content)
+                pass
 
+        return image_ids
 
-def get_diaries_overview(token, partner=False):
-    headers = {'auth': f'token {token}',
-               'User-Agent': 'OhApp/3.6.12 Platform/Android'}
-    r = requests.post("https://nideriji.cn/api/v2/sync/",
-                      headers=headers,
-                      data={'user_config_ts': '0', 'diaries_ts': '0',
-                            'readmark_ts': '0', 'images_ts': '0'})
-    r.raise_for_status()
-    data = r.json()
-
-    if partner:
-        diaries = data.get('diaries_paired', [])
-        all_image_ids = [img['image_id']
-                         for img in data.get('images_paired', [])]
-        user_id = data['user_config']['paired_user_config']['userid']
-    else:
-        diaries = data.get('diaries', [])
-        all_image_ids = [img['image_id'] for img in data.get('images', [])]
-        user_id = data['user_config']['userid']
-
-    print(f"[INFO] 获取到 {len(all_image_ids)} 张图片 ID")
-    if diaries:
-        print(
-            f"[INFO] 获取日记总数: {len(diaries)} 篇，日期范围: {diaries[-1]['createddate']} - {diaries[0]['createddate']}")
-    return diaries, user_id, all_image_ids
-
-
-def get_diary_full(token, user_id, diary_id):
-    headers = {'auth': f'token {token}',
-               'User-Agent': 'OhApp/3.6.12 Platform/Android'}
-    r = requests.post(f"https://nideriji.cn/api/diary/all_by_ids/{user_id}/",
-                      headers=headers,
-                      data={'diary_ids': diary_id})
-    r.raise_for_status()
-    data = r.json()
-    if 'diaries' in data and data['diaries']:
-        d = data['diaries'][0]
-        d['content'] = clean_unicode(d.get('content', ''))
-        d['content'] = decrypt_privacy(d['content'], user_id)
-        return d
-    return None
-
-
-def filter_diaries_by_date(diaries, start_date, end_date):
-    filtered = [d for d in diaries if start_date <= datetime.datetime.strptime(
-        d['createddate'], "%Y-%m-%d").date() <= end_date]
-    filtered.sort(key=lambda x: x['createddate'], reverse=not ORDER_OLD_TO_NEW)
-    print(f"[INFO] {len(filtered)} 篇日记在指定范围内")
-    return filtered
-
-
-def save_diary(diary, markdown_folder):
-    diary_date = datetime.datetime.strptime(
-        diary['createddate'], "%Y-%m-%d").date()
-    folder_name = os.path.join(
-        markdown_folder, f"{diary_date.year}-{diary_date.month:02d}")
-    os.makedirs(folder_name, exist_ok=True)
-    filename = os.path.join(folder_name, f"{diary_date}.md")
-    with open(filename, 'w', encoding='utf-8') as f:
-        weekday = diary.get('weekday', '')
-        f.write(f"=={diary['createddate']} {weekday}==\n")
-        f.write(diary.get('title', '') + '\n')
-        f.write(diary.get('content', ''))
-
-
-def download_all_images(image_ids, user_id, headers, pictures_folder):
-    os.makedirs(pictures_folder, exist_ok=True)
-    print(f"[INFO] 开始下载 {len(image_ids)} 张图片")
-    for image_id in tqdm(image_ids, desc="下载图片", unit="img"):
+    def download_image(self, image_id, user_id, target_folder):
+        """下载单张图片"""
         url = f"https://f.nideriji.cn/api/image/{user_id}/{image_id}/"
+
         try:
-            r = requests.get(url, headers=headers, timeout=15)
-            r.raise_for_status()
-            with open(os.path.join(pictures_folder, f"{image_id}.jpg"), 'wb') as f:
-                f.write(r.content)
+            # 下载图片
+            response = self.session.get(url, timeout=REQUEST_TIMEOUT)
+            time.sleep(REQUEST_INTERVAL)
+            response.raise_for_status()
+
+            # 确定文件扩展名
+            content_type = response.headers.get('content-type', '').lower()
+            if 'jpeg' in content_type or 'jpg' in content_type:
+                ext = '.jpg'
+            elif 'png' in content_type:
+                ext = '.png'
+            else:
+                # 尝试从内容判断
+                if response.content[:3] == b'\xff\xd8\xff':
+                    ext = '.jpg'
+                elif response.content[:8] == b'\x89PNG\r\n\x1a\n':
+                    ext = '.png'
+                else:
+                    ext = '.jpg'  # 默认
+
+            # 保存图片
+            image_path = os.path.join(target_folder, f"{image_id}{ext}")
+            with open(image_path, 'wb') as f:
+                f.write(response.content)
+
+            return True
+
+        except requests.exceptions.Timeout:
+            print(f"[WARN] 下载图片 {image_id} 超时")
+            return False
         except Exception as e:
             print(f"[WARN] 下载图片 {image_id} 失败: {e}")
-
-
-def replace_images_in_markdown(diaries, markdown_folder, pictures_folder):
-    md_files = []
-    for d in diaries:
-        diary_date = datetime.datetime.strptime(
-            d['createddate'], "%Y-%m-%d").date()
-        folder_name = os.path.join(
-            markdown_folder, f"{diary_date.year}-{diary_date.month:02d}")
-        md_files.append(os.path.join(folder_name, f"{diary_date}.md"))
-    for md_file in tqdm(md_files, desc="替换图片路径", unit="篇"):
-        with open(md_file, 'r', encoding='utf-8') as f:
-            content = f.read()
-        content = re.sub(
-            r'\[图(\d+)\]', lambda m: f"![img]({os.path.join(pictures_folder, f'{m.group(1)}.jpg')})", content)
-        with open(md_file, 'w', encoding='utf-8') as f:
-            f.write(content)
-
-
-def run_trans_script(base_folder):
-    try:
-        result = subprocess.run([sys.executable, "trans.py", base_folder],
-                                capture_output=True, text=True)
-        if result.returncode == 0:
-            print("[INFO] HTML文件生成成功！")
-            print(result.stdout)
-            return True
-        else:
-            print("[ERROR] HTML文件生成失败")
-            print(result.stderr)
             return False
-    except Exception as e:
-        print(f"[ERROR] 运行 trans.py 时出错: {e}")
-        return False
+
+    def save_diary_markdown(self, diary, base_folder):
+        """保存日记为Markdown文件"""
+        # 解析日期
+        date_str = diary.get("createddate", "")
+        if not date_str:
+            return None
+
+        try:
+            date_obj = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+        except:
+            print(f"[WARN] 无效的日期格式: {date_str}")
+            return None
+
+        # 创建年份-月份文件夹
+        year_month = f"{date_obj.year}-{date_obj.month:02d}"
+        month_folder = os.path.join(base_folder, "markdown", year_month)
+        os.makedirs(month_folder, exist_ok=True)
+
+        # 创建月份内的Pictures文件夹
+        month_pictures_folder = os.path.join(month_folder, "Pictures")
+        os.makedirs(month_pictures_folder, exist_ok=True)
+
+        # 获取星期几
+        weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+        weekday = weekdays[date_obj.weekday()]
+
+        # 构建Markdown内容
+        title = diary.get("title", "")
+        content = diary.get("content", "")
+        weather = diary.get("weather", "")
+        mood = diary.get("mood", "")
+
+        # 去除每段开头可能的的四个空格缩进 注：否则会导致html正文排版溢出
+        content_lines = content.split('\n')
+        content_lines = [line[4:] if line.startswith(
+            '    ') else line for line in content_lines]
+        content = '\n'.join(content_lines)
+
+        # 替换图片引用为相对路径（指向同一文件夹内的Pictures子文件夹）
+        def replace_image_ref(match):
+            image_id = match.group(1)
+            return f"![图片{image_id}](Pictures/{image_id}.jpg)"
+
+        content = re.sub(r'\[图(\d+)\]', replace_image_ref, content)
+
+        # 构建完整的Markdown
+        lines = []
+        lines.append(f"=={date_str} {weekday}==")
+        lines.append("")
+
+        if title:
+            lines.append(f"# {title}")
+            lines.append("")
+
+        if weather or mood:
+            tags = []
+            if weather:
+                tags.append(f"天气: {weather}")
+            if mood:
+                tags.append(f"心情: {mood}")
+            lines.append(f"**{' | '.join(tags)}**")
+            lines.append("")
+
+        lines.append(content)
+        lines.append("")
+
+        # 写入文件
+        file_path = os.path.join(month_folder, f"{date_str}.md")
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines))
+
+        return {
+            "file_path": file_path,
+            "month_folder": month_folder,
+            "year_month": year_month,
+            "pictures_folder": month_pictures_folder,
+            "image_ids": diary.get("image_ids", set())
+        }
+
+    def download_diaries(self, diaries_data, partner=False):
+        """下载日记"""
+        if not diaries_data or not diaries_data.get("diaries"):
+            print("[ERROR] 没有日记数据")
+            return False
+
+        diaries = diaries_data["diaries"]
+        author_user_id = diaries_data["user_id"]
+
+        print(f"[INFO] 准备下载 {len(diaries)} 篇日记...")
+
+        # 选择基础文件夹
+        base_folder = "partner" if partner else "myself"
+
+        # 创建基础文件夹
+        markdown_base = os.path.join(base_folder, "markdown")
+        html_base = os.path.join(base_folder, "html")
+        os.makedirs(markdown_base, exist_ok=True)
+        os.makedirs(html_base, exist_ok=True)
+
+        # 获取完整日记内容
+        print("[INFO] 正在获取日记详情...")
+        full_diaries = []
+
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = []
+            for diary in diaries:
+                diary_id = diary.get("id")
+                if diary_id:
+                    future = executor.submit(
+                        self.get_full_diary_content,
+                        diary_id,
+                        author_user_id
+                    )
+                    futures.append((diary, future))
+
+            for diary, future in tqdm(futures, desc="获取日记", unit="篇"):
+                try:
+                    result = future.result(timeout=30)
+                    if result:
+                        full_diaries.append(result)
+                except Exception as e:
+                    print(f"[WARN] 获取日记失败: {e}")
+
+        print(f"[INFO] 成功获取 {len(full_diaries)} 篇完整日记")
+
+        # 保存日记并按月份记录需要的图片
+        print("[INFO] 正在保存Markdown文件...")
+        month_image_map = {}  # {year_month: {folder: path, image_ids: set()}}
+
+        for diary in tqdm(full_diaries, desc="保存日记", unit="篇"):
+            save_info = self.save_diary_markdown(diary, base_folder)
+            if save_info:
+                year_month = save_info["year_month"]
+                if year_month not in month_image_map:
+                    month_image_map[year_month] = {
+                        "folder": save_info["pictures_folder"],
+                        "image_ids": set()
+                    }
+                # 合并该月份的图片ID
+                month_image_map[year_month]["image_ids"].update(
+                    save_info["image_ids"])
+
+        # 按需下载图片（每个月份的图片都下载到对应的Pictures文件夹）
+        total_images = sum(len(info["image_ids"])
+                           for info in month_image_map.values())
+        if total_images > 0:
+            print(f"[INFO] 需要下载 {total_images} 张图片（按需下载）")
+
+            # 为每个月份的图片创建下载任务
+            all_download_tasks = []
+            for year_month, info in month_image_map.items():
+                pictures_folder = info["folder"]
+                for image_id in info["image_ids"]:
+                    all_download_tasks.append({
+                        "image_id": image_id,
+                        "user_id": author_user_id,
+                        "folder": pictures_folder,
+                        "month": year_month
+                    })
+
+            # 下载图片（控制并发）
+            downloaded_count = 0
+            failed_images = []
+
+            with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, 3)) as executor:
+                futures = {}
+                for task in all_download_tasks:
+                    future = executor.submit(
+                        self.download_image,
+                        task["image_id"],
+                        task["user_id"],
+                        task["folder"]
+                    )
+                    futures[future] = task
+
+                for future in tqdm(as_completed(futures), total=len(futures), desc="下载图片"):
+                    task = futures[future]
+                    try:
+                        if future.result():
+                            downloaded_count += 1
+                        else:
+                            failed_images.append(
+                                f"图片{task['image_id']} (月份: {task['month']})")
+                    except Exception as e:
+                        failed_images.append(
+                            f"图片{task['image_id']} (月份: {task['month']}) - {e}")
+
+            print(f"[INFO] 图片下载完成: {downloaded_count}/{total_images}")
+
+            # 输出下载失败的图片
+            if failed_images:
+                print(f"\n[WARN] 以下 {len(failed_images)} 张图片下载失败:")
+                for failed in failed_images:
+                    print(f"  - {failed}")
+        else:
+            print("[INFO] 没有需要下载的图片")
+
+        # 保存统计信息
+        stats = {
+            "total_diaries": len(full_diaries),
+            "total_images": total_images,
+            "downloaded_images": downloaded_count,
+            "failed_images": len(failed_images) if total_images > 0 else 0,
+            "months": list(month_image_map.keys()),
+            "export_time": datetime.datetime.now().isoformat(),
+            "user_id": self.user_id,
+            "partner": partner
+        }
+
+        stats_file = os.path.join(base_folder, "export_stats.json")
+        with open(stats_file, 'w', encoding='utf-8') as f:
+            json.dump(stats, f, ensure_ascii=False, indent=2)
+
+        return True
+
+    def generate_html(self, base_folder):
+        """生成HTML文件"""
+        print("[INFO] 正在生成HTML文件...")
+
+        html_folder = os.path.join(base_folder, "html")
+        if not os.path.exists(html_folder):
+            print(f"[ERROR] HTML文件夹不存在: {html_folder}")
+            return False
+
+        try:
+            # 调用trans.py脚本（处理 Windows 编码问题）
+            result = subprocess.run(
+                [sys.executable, "trans.py", base_folder],
+                capture_output=True,
+                text=True,
+                encoding='gbk',  # Windows 系统使用 gbk 编码
+                errors='ignore',  # 忽略编码错误
+                cwd=os.getcwd()
+            )
+
+            if result.returncode == 0:
+                print("[INFO] HTML文件生成成功！")
+
+                # 检查输出目录
+                output_dir = os.path.join(base_folder, "html")
+                if os.path.exists(output_dir):
+                    print(f"[INFO] HTML文件位于: {output_dir}")
+                    # 列出生成的HTML文件
+                    for file in os.listdir(output_dir):
+                        if file.endswith('.html'):
+                            print(f"  - {file}")
+                return True
+            else:
+                print("[ERROR] HTML文件生成失败")
+                if result.stderr:
+                    print(f"错误: {result.stderr}")
+                return False
+
+        except Exception as e:
+            print(f"[ERROR] 运行trans.py时出错: {e}")
+            return False
+
+
+def main():
+    """主函数"""
+
+    # 输入邮箱和密码
+    email = input(f"请输入邮箱：").strip()
+    if not email:
+        email = EMAIL
+
+    password = input("请输入密码：").strip()
+    if not password:
+        password = PASSWORD
+
+    # 创建下载器
+    downloader = DiaryDownloader(email, password)
+
+    # 登录
+    if not downloader.login():
+        return
+
+    # 选择导出目标
+    while True:
+        choice = input("输入1保存自己的日记，输入2保存搭档的日记：") or "1"
+        if choice in ["1", "2"]:
+            partner = (choice == "2")
+            break
+        else:
+            print("请输入1或2！")
+
+    target_name = "搭档" if partner else "自己"
+    print(f"\n[INFO] 准备导出 {target_name} 的日记")
+
+    # 获取日记列表
+    sync_data = downloader.get_sync_data(partner)
+    if not sync_data:
+        print("[ERROR] 无法获取日记列表")
+        return
+
+    diaries = sync_data["diaries"]
+    if not diaries:
+        print("[INFO] 没有日记可导出")
+        return
+
+    # 显示日期范围
+    dates = [d.get("createddate", "") for d in diaries if d.get("createddate")]
+    if dates:
+        min_date = min(dates)
+        max_date = max(dates)
+        print(f"[INFO] 日记日期范围: {min_date} 到 {max_date}")
+
+    # 询问日期范围
+    print("\n请设置导出日期范围:")
+    print(f"最早日期: {min_date}")
+
+    # 获取起始年份和月份
+    start_input = input(f"请输入起始日期(YYYY-MM)：").strip()
+    if start_input:
+        try:
+            start_year, start_month = map(int, start_input.split('-'))
+            start_date = datetime.date(start_year, start_month, 1)
+        except:
+            print("[INFO] 使用全部日期范围")
+            start_date = None
+    else:
+        start_date = None
+
+    end_input = input(f"请输入结束日期(YYYY-MM)：").strip()
+    if end_input:
+        try:
+            end_year, end_month = map(int, end_input.split('-'))
+            # 计算月份的最后一天
+            if end_month == 12:
+                next_month = datetime.date(end_year + 1, 1, 1)
+            else:
+                next_month = datetime.date(end_year, end_month + 1, 1)
+            end_date = next_month - datetime.timedelta(days=1)
+        except:
+            print("[INFO] 使用全部日期范围")
+            end_date = None
+    else:
+        end_date = None
+
+    # 筛选日记
+    if start_date or end_date:
+        filtered_diaries = []
+        for diary in diaries:
+            date_str = diary.get("createddate", "")
+            if date_str:
+                try:
+                    diary_date = datetime.datetime.strptime(
+                        date_str, "%Y-%m-%d").date()
+                    if start_date and diary_date < start_date:
+                        continue
+                    if end_date and diary_date > end_date:
+                        continue
+                    filtered_diaries.append(diary)
+                except:
+                    pass
+        diaries = filtered_diaries
+
+    print(f"[INFO] 将导出 {len(diaries)} 篇日记")
+
+    if not diaries:
+        print("[INFO] 指定日期范围内没有日记")
+        return
+
+    # 更新同步数据中的日记列表
+    sync_data["diaries"] = diaries
+
+    # 下载日记
+    success = downloader.download_diaries(sync_data, partner)
+
+    if success:
+        print("\n" + "=" * 60)
+        print("[INFO] 日记导出完成！")
+
+        # 询问是否生成HTML
+        html_choice = input("\n是否生成HTML文件? (y/n, 默认: y): ").strip().lower()
+        if html_choice in ["", "y", "yes"]:
+            base_folder = "partner" if partner else "myself"
+            downloader.generate_html(base_folder)
+
+        print("\n[INFO] 导出完成！")
+        base_folder = "partner" if partner else "myself"
+        # print(f"  Markdown文件: {base_folder}/markdown/")
+        # print(f"  HTML文件: {base_folder}/html/")
+        # print(f"  图片文件: 各月份文件夹内的Pictures/子文件夹")
+        # print("\n感谢使用！")
+    else:
+        print("[ERROR] 导出失败")
 
 
 if __name__ == "__main__":
-    email = input(f"请输入邮箱：") or EMAIL
-    password = input(f"请输入密码: ") or PASSWORD
-    token = login(email, password)
-
-    choice = input("输入1保存自己的日记，输入2保存搭档的日记：") or "1"
-    partner = choice == "2"
-
-    # ---------------- 用户基准目录 ----------------
-    base_folder = "partner" if partner else "myself"
-    markdown_folder = os.path.join(base_folder, "markdown")
-    html_folder = os.path.join(base_folder, "html")
-    pictures_folder = os.path.join(html_folder, "output", "Pictures")
-    os.makedirs(markdown_folder, exist_ok=True)
-    os.makedirs(html_folder, exist_ok=True)
-    os.makedirs(os.path.join(html_folder, "output"), exist_ok=True)
-
-    # ---------------- 拷贝模板、logo、背景 ----------------
-    src_html_dir = "html"  # 原始模板存放位置
-    for fname in ["template.html", "logo.png", "background.png"]:
-        src = os.path.join(src_html_dir, fname)
-        dst = os.path.join(html_folder, fname)
-        if os.path.exists(src):
-            shutil.copy2(src, dst)
-
-    diaries_overview, user_id, all_image_ids = get_diaries_overview(
-        token, partner)
-
-    first_date = datetime.datetime.strptime(
-        diaries_overview[-1]['createddate'], "%Y-%m-%d").year
-    now = datetime.datetime.now()
-    start_year = int(input(f"请输入起始年份 [{first_date}]: ") or first_date)
-    start_month = int(input("请输入起始月份 [1]: ") or 1)
-    end_year = int(input(f"请输入结束年份 [{now.year}]: ") or now.year)
-    end_month = int(input(f"请输入结束月份 [{now.month}]: ") or now.month)
-    start_date = datetime.date(start_year, start_month, 1)
-    end_day = (datetime.date(end_year, end_month + 1, 1) -
-               datetime.timedelta(days=1)).day if end_month < 12 else 31
-    end_date = datetime.date(end_year, end_month, end_day)
-
-    filtered_diaries = filter_diaries_by_date(
-        diaries_overview, start_date, end_date)
-
-    headers = {'auth': f'token {token}',
-               'User-Agent': 'OhApp/3.6.12 Platform/Android'}
-
-    print("[INFO] 下载并保存日记...")
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = [executor.submit(
-            get_diary_full, token, user_id, d['id']) for d in filtered_diaries]
-        full_diaries = []
-        for future in tqdm(as_completed(futures), total=len(futures), desc="下载日记", unit="篇"):
-            diary = future.result()
-            if diary:
-                save_diary(diary, markdown_folder)
-                full_diaries.append(diary)
-
-    used_default_range = (
-        start_year == first_date and start_month == 1 and
-        end_year == now.year and end_month == now.month
-    )
-
-    if not DOWNLOAD_IMAGES_ONLY_DEFAULT or used_default_range:
-        download_all_images(all_image_ids, user_id, headers, pictures_folder)
-        replace_images_in_markdown(full_diaries, markdown_folder, "./Pictures")
-    else:
-        print("[INFO] 非默认日期范围，跳过下载图片步骤")
-
-    print("[INFO] 日记导出完成！")
-
-    generate_html_choice = input("是否生成HTML文件？(y/n): ").lower()
-    if generate_html_choice == 'y':
-        success = run_trans_script(base_folder)
-        if success:
-            print(f"[INFO] 所有操作完成！HTML文件已生成在 {html_folder}/output/ 目录")
-        else:
-            print("[WARNING] HTML生成失败，但Markdown文件已保存")
-    else:
-        print("[INFO] 跳过HTML生成")
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\n[INFO] 用户中断操作")
+    except Exception as e:
+        print(f"\n\n[ERROR] 程序运行出错: {e}")
+        import traceback
+        traceback.print_exc()
