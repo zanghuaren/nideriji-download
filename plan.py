@@ -444,6 +444,8 @@ class DiaryDownloader:
         # 按需下载图片（每个月份的图片都下载到对应的Pictures文件夹）
         total_images = sum(len(info["image_ids"])
                            for info in month_image_map.values())
+        downloaded_count = 0
+        failed_images = []
         if total_images > 0:
             print(f"[INFO] 需要下载 {total_images} 张图片（按需下载）")
 
@@ -659,3 +661,4 @@ if __name__ == "__main__":
         print(f"\n\n[ERROR] 程序运行出错: {e}")
         import traceback
         traceback.print_exc()
+
