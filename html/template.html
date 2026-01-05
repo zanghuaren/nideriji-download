@@ -6,6 +6,18 @@
 <title>你的日记</title>
 <meta name="color-scheme" content="light dark">
 <style>
+.word-count {
+  font-size: 14px;
+  margin-left: 12px;
+  color: var(--muted);
+  font-family: "Georgia", "Times New Roman", "Songti SC", serif;
+  letter-spacing: 0.08em;
+}
+.word-count::before {
+  content: "— ";
+  opacity: .5;
+}
+
 :root {
   --bg: #f7f7fb; --paper: #ffffff; --ink: #141414; --muted: #6b7280;
   --primary: #3b82f6; --radius: 16px; --shadow: 0 10px 25px rgba(17, 24, 39, 0.08);
@@ -100,13 +112,15 @@ mark { background-color: yellow; }
   .diary { box-shadow: none; border: none; page-break-inside: avoid; }
 }
 </style>
+
 </head>
 <body>
 <div class="wrap">
   <div class="topbar">
     <div class="brand">
       <img src="./logo.png" alt="logo" />
-      你的日记
+      <span>你的日记</span>
+      <span id="wordCount" class="word-count">共0字</span>
     </div>
     <div class="actions">
       <button class="btn" id="toggle-theme" title="切换主题">切换主题</button>
@@ -202,5 +216,21 @@ diaries.forEach(d=>{
   });
 });
 </script>
+<script>
+function countDiaryWords() {
+  let total = 0;
+  document.querySelectorAll(".diary .content").forEach(el => {
+    const text = el.innerText
+      .replace(/\s+/g, '')     // 去掉空白
+      .replace(/[^\u4e00-\u9fa5a-zA-Z0-9]/g, ''); // 保留中英文和数字
+    total += text.length;
+  });
+  const wc = document.getElementById("wordCount");
+  if (wc) wc.textContent = `共${total}字`;
+}
+
+document.addEventListener("DOMContentLoaded", countDiaryWords);
+</script>
+
 </body>
 </html>
